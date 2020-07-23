@@ -135,6 +135,7 @@ defmodule Samly.SPHandler do
       |> configure_session(drop: true)
       |> redirect(302, target_url)
     else
+      {:error, :authn_failed} -> process_failed_authentization(conn)
       error -> conn |> send_resp(403, "invalid_request #{inspect(error)}")
     end
 
@@ -142,6 +143,32 @@ defmodule Samly.SPHandler do
     #   error ->
     #     Logger.error("#{inspect error}")
     #     conn |> send_resp(500, "request_failed")
+  end
+
+  # We need process_failed_authentization/1 function to process SLO response from Okta IDP.
+  # Okta do not send SLO request to SP providers, when we log out from Okta session.
+  # That is why, when we log in into SP with some account,
+  # than log out from Okta service (IDP) and log in into IDP with second account,
+  # we will get {:error, :authn_failed} error on handling SLO SAML response from SP.
+  # So, in case we get SLO SAML response from Okta IDP with authentication error,
+  # we just skip it and redirect to target url.
+  #
+  # Please see https://support.okta.com/help/s/question/0D51Y00006G6PRr/single-logout-request-doesnt-send-to-other-applications?language=en_US
+  @idp_origin_regexp ~r/okta\.com/i
+  defp process_failed_authentization(conn) do
+    %IdpData{entity_id: entity_id} = conn.private[:samly_idp]
+    target_url = get_session(conn, "target_url")
+    entity_id_not_empty? = byte_size(entity_id) > 0
+    target_url_not_nil? = not is_nil(target_url)
+    entity_id_matches_regexp? = Regex.match?(@idp_origin_regexp, entity_id)
+
+    if entity_id_not_empty? and entity_id_matches_regexp? and target_url_not_nil? do
+      conn
+      |> configure_session(drop: true)
+      |> redirect(302, target_url)
+    else
+      send_resp(conn, 403, "invalid_request #{inspect({:error, :authn_failed})}")
+    end
   end
 
   # non-ui logout request from IDP
